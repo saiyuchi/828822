@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>光影接球大挑戰 — 視訊動作小遊戲</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans TC", sans-serif;
+    }
+
+    body {
+      background: #0f172a;
+      color: #f8fafc;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      gap: 14px;
+    }
+
+    .hud {
+      width: 100%;
+      max-width: 800px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: #1e293b;
+      padding: 12px 20px;
+      border-radius: 12px;
+      border: 1px solid #334155;
+      font-size: 1.05rem;
+    }
+
+    .hud-group {
+      display: flex;
+      gap: 20px;
+      align-items: center;
+    }
+
+    .badge {
+      font-weight: 700;
+      color: #38bdf8;
+    }
+
+    .lives {
+      color: #fb7185;
+      font-weight: 700;
+    }
+
+    .stage-wrapper {
+      position: relative;
+      width: 100%;
+      max-width: 800px;
+      aspect-ratio: 4 / 3;
+      background: #020617;
+      border-radius: 16px;
+      overflow: hidden;
+      border: 2px solid #334155;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+    }
+
+    /* 鏡像翻轉讓動作更直覺 */
+    video {
+      display: none;
+    }
+
+    canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+      transform: scaleX(-1);
+    }
+
+    .overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.82);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 24px;
+      gap: 14px;
+      z-index: 10;
+    }
+
+    .overlay.hidden {
+      display: none;
+    }
+
+    .overlay h1 {
+      font-size: 1.8rem;
+      color: #38bdf8;
+    }
+
+    .overlay p {
+      max-width: 480px;
+      line-height: 1.6;
+      color: #cbd5e1;
+      font-size: 0.98rem;
+    }
+
+    button {
+      background: #0284c7;
+      color: white;
+      border: none;
+      padding: 12px 28px;
+      font-size: 1.05rem;
+      font-weight: 700;
+      border-radius: 999px;
+      cursor: pointer;
+      transition: transform 0.12s ease, background 0.15s ease;
+    }
+
+    button:hover {
+      background: #0369a1;
+      transform: translateY(-1px);
+    }
+
+    button:active {
+      transform: scale(0.98);
+    }
+
+    .controls {
+      width: 100%;
+      max-width: 800px;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      background: #1e293b;
+      padding: 10px 18px;
+      border-radius: 12px;
+      font-size: 0.9rem;
+      color: #cbd5e1;
+    }
+
+    .slider-box {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .status {
+      color: #94a3b8;
+      font-size: 0.88rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="hud">
+    <div class="hud-group">
+      <div>分數：<span class="badge" id="scoreEl">0</span></div>
+      <div>最高分：<span class="badge" id="highScoreEl">0</span></div>
+    </div>
+    <div class="lives" id="livesEl">❤️❤️❤️</div>
+  </div>
+
+  <div class="stage-wrapper">
+    <video id="video" playsinline autoplay muted></video>
+    <canvas id="canvas" width="640" height="480"></canvas>
+
+    <div class="overlay" id="startOverlay">
+      <h1>光影接球大挑戰</h1>
+      <p>
+        開啟視訊相機後，在畫面中<strong>揮動手掌或移動身體</strong>，
+        觸發下方或周圍的感應區即可把落下的能量球彈回得分！
+        漏接會失去一顆愛心，愛心歸零遊戲結束。
+      </p>
+      <button id="startBtn">開啟相機並開始遊戲</button>
+      <div class="status" id="statusText">需要在安全連線（HTTPS 或 localhost）下使用相機</div>
+    </div>
+
+    <div class="overlay hidden" id="gameOverOverlay">
+      <h1>遊戲結束</h1>
+      <p id="finalScoreText">你的得分：0</p>
+      <button id="restartBtn">再玩一次</button>
+    </div>
+  </div>
+
+  <div class="controls">
+    <div class="slider-box">
+      <label for="sensitivity">動作靈敏度：</label>
+      <input type="range" id="sensitivity" min="15" max="60" value="30" />
+      <span id="sensVal">30</span>
+    </div>
+    <div>提示：光線充足、背景單純時，手部與身體動作辨識更準確</div>
+  </div>
+
+  <script>
+    const video = document.getElementById("video");
+    const canvas = document.getElementById("canvas");
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+
+    // 用於計算前後影格差異的離屏畫布
+    const diffCanvas = document.createElement("canvas");
+    diffCanvas.width = 160;
+    diffCanvas.height = 120;
+    const diffCtx = diffCanvas.getContext("2d", { willReadFrequently: true });
+
+    const scoreEl = document.getElementById("scoreEl");
+    const highScoreEl = document.getElementById("highScoreEl");
+    const livesEl = document.getElementById("livesEl");
+    const startOverlay = document.getElementById("startOverlay");
+    const gameOverOverlay = document.getElementById("gameOverOverlay");
+    const finalScoreText = document.getElementById("finalScoreText");
+    const statusText = document.getElementById("statusText");
+    const startBtn = document.getElementById("startBtn");
+    const restartBtn = document.getElementById("restartBtn");
+    const sensitivityInput = document.getElementById("sensitivity");
+    const sensVal = document.getElementById("sensVal");
+
+    let prevFrame = null;
+    let score = 0;
+    let highScore = Number(localStorage.getItem("motion_catch_highscore") || 0);
+    let lives = 3;
+    let isPlaying = false;
+    let cameraReady = false;
+    let animationId = null;
+
+    highScoreEl.textContent = highScore;
+
+    sensitivityInput.addEventListener("input", () => {
+      sensVal.textContent = sensitivityInput.value;
+    });
+
+    // 將畫面分成 4 個底部/側邊感應區塊（對應鏡像後的視覺座標）
+    const zones = [
+      { x: 40, y: 340, w: 130, h: 110, motion: 0, cooldown: 0 },
+      { x: 185, y: 340, w: 130, h: 110, motion: 0, cooldown: 0 },
+      { x: 330, y: 340, w: 130, h: 110, motion: 0, cooldown: 0 },
+      { x: 475, y: 340, w: 130, h: 110, motion: 0, cooldown: 0 },
+    ];
+
+    const ball = {
+      x: 320,
+      y: 80,
+      r: 20,
+      vx: 1.5,
+      vy: 3.2,
+    };
+
+    function resetBall() {
+      ball.x = 120 + Math.random() * (canvas.width - 240);
+      ball.y = 60;
+      const speedBoost = Math.min(4.5, score * 0.12);
+      ball.vy = 3.0 + speedBoost;
+      ball.vx = (Math.random() < 0.5 ? -1 : 1) * (1.5 + Math.random() * 1.8);
+    }
+
+    function startGameState() {
+      score = 0;
+      lives = 3;
+      scoreEl.textContent = score;
+      livesEl.textContent = "❤️❤️❤️";
+      resetBall();
+      isPlaying = true;
+      startOverlay.classList.add("hidden");
+      gameOverOverlay.classList.add("hidden");
+    }
+
+    function gameOver() {
+      isPlaying = false;
+      if (score > highScore) {
+        highScore = score;
+        localStorage.setItem("motion_catch_highscore", highScore);
+        highScoreEl.textContent = highScore;
+      }
+      finalScoreText.textContent = `你的得分：${score}（最高分：${highScore}）`;
+      gameOverOverlay.classList.remove("hidden");
+    }
+
+    async function initCamera() {
+      if (cameraReady) {
+        startGameState();
+        return;
+      }
+      try {
+        statusText.textContent = "正在請求相機權限...";
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: "user" },
+          audio: false,
+        });
+        video.srcObject = stream;
+        await video.play();
+        cameraReady = true;
+        startGameState();
+        loop();
+      } catch (err) {
+        statusText.textContent = "無法開啟相機：請確認已允許權限，並使用 HTTPS 或本機伺服器開啟。";
+        console.error(err);
+      }
+    }
+
+    function detectMotion() {
+      // 縮小到 160x120 計算差異，兼顧效能與即時性
+      diffCtx.drawImage(video, 0, 0, diffCanvas.width, diffCanvas.height);
+      const curr = diffCtx.getImageData(0, 0, diffCanvas.width, diffCanvas.height);
+      const data = curr.data;
+
+      const threshold = Number(sensitivityInput.value);
+      const scaleX = diffCanvas.width / canvas.width;
+      const scaleY = diffCanvas.height / canvas.height;
+
+      for (const z of zones) {
+        if (z.cooldown > 0) z.cooldown--;
+        let activePixels = 0;
+        let totalSampled = 0;
+
+        const startX = Math.max(0, Math.floor(z.x * scaleX));
+        const endX = Math.min(diffCanvas.width, Math.ceil((z.x + z.w) * scaleX));
+        const startY = Math.max(0, Math.floor(z.y * scaleY));
+        const endY = Math.min(diffCanvas.height, Math.ceil((z.y + z.h) * scaleY));
+
+        if (prevFrame) {
+          for (let y = startY; y < endY; y += 2) {
+            for (let x = startX; x < endX; x += 2) {
+              const idx = (y * diffCanvas.width + x) * 4;
+              const diff =
+                (Math.abs(data[idx] - prevFrame[idx]) +
+                  Math.abs(data[idx + 1] - prevFrame[idx + 1]) +
+                  Math.abs(data[idx + 2] - prevFrame[idx + 2])) /
+                3;
+              totalSampled++;
+              if (diff > threshold) {
+                activePixels++;
+              }
+            }
+          }
+        }
+
+        // 超過 14% 像素發生明顯變化即視為有動作
+        const ratio = totalSampled > 0 ? activePixels / totalSampled : 0;
+        z.motion = Math.min(1, ratio / 0.14);
+      }
+
+      prevFrame = new Uint8ClampedArray(data);
+    }
+
+    function updateBall() {
+      if (!isPlaying) return;
+
+      ball.x += ball.vx;
+      ball.y += ball.vy;
+
+      // 左右牆壁反彈
+      if (ball.x - ball.r < 0) {
+        ball.x = ball.r;
+        ball.vx = Math.abs(ball.vx);
+      } else if (ball.x + ball.r > canvas.width) {
+        ball.x = canvas.width - ball.r;
+        ball.vx = -Math.abs(ball.vx);
+      }
+
+      // 天花板反彈
+      if (ball.y - ball.r < 0) {
+        ball.y = ball.r;
+        ball.vy = Math.abs(ball.vy);
+      }
+
+      // 檢查是否與「正在觸發動作的感應區」碰撞
+      for (const z of zones) {
+        const isTriggered = z.motion > 0.35;
+        if (!isTriggered) continue;
+
+        const closestX = Math.max(z.x, Math.min(ball.x, z.x + z.w));
+        const closestY = Math.max(z.y, Math.min(ball.y, z.y + z.h));
+        const dx = ball.x - closestX;
+        const dy = ball.y - closestY;
+
+        if (dx * dx + dy * dy <= ball.r * ball.r && z.cooldown === 0 && ball.vy > 0) {
+          z.cooldown = 12;
+          score += 1;
+          scoreEl.textContent = score;
+
+          const speed = Math.min(9.5, Math.hypot(ball.vx, ball.vy) * 1.06 + 0.25);
+          const zoneCenter = z.x + z.w / 2;
+          const hitOffset = (ball.x - zoneCenter) / (z.w / 2); // -1 ~ 1
+          const angle = -Math.PI / 2 + hitOffset * 0.75; // 向上扇形反彈
+
+          ball.vx = Math.cos(angle) * speed;
+          ball.vy = Math.sin(angle) * speed;
+          ball.y = z.y - ball.r - 1;
+          break;
+        }
+      }
+
+      // 掉出底部扣血
+      if (ball.y - ball.r > canvas.height) {
+        lives -= 1;
+        livesEl.textContent = "❤️".repeat(Math.max(0, lives)) || "💔";
+        if (lives <= 0) {
+          gameOver();
+        } else {
+          resetBall();
+        }
+      }
+    }
+
+    function render() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // 繪製視訊底圖
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+      // 繪製感應區
+      for (const z of zones) {
+        const active = z.motion > 0.35;
+        ctx.save();
+        ctx.fillStyle = active
+          ? `rgba(56, 189, 248, ${0.25 + z.motion * 0.35})`
+          : "rgba(15, 23, 42, 0.35)";
+        ctx.strokeStyle = active ? "#38bdf8" : "rgba(148, 163, 184, 0.65)";
+        ctx.lineWidth = active ? 3 : 2;
+        ctx.setLineDash(active ? [] : [8, 6]);
+
+        ctx.beginPath();
+        ctx.roundRect(z.x, z.y, z.w, z.h, 14);
+        ctx.fill();
+        ctx.stroke();
+
+        // 因為 canvas 整體做了 scaleX(-1)，文字需再翻轉回來才不會反字
+        ctx.translate(z.x + z.w / 2, z.y + z.h / 2);
+        ctx.scale(-1, 1);
+        ctx.fillStyle = active ? "#ffffff" : "#e2e8f0";
+        ctx.font = "bold 15px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(active ? "感應中！" : "揮手彈球", 0, 0);
+        ctx.restore();
+      }
+
+      // 繪製能量球
+      if (isPlaying || lives > 0) {
+        const grad = ctx.createRadialGradient(
+          ball.x - ball.r * 0.3,
+          ball.y - ball.r * 0.3,
+          ball.r * 0.1,
+          ball.x,
+          ball.y,
+          ball.r
+        );
+        grad.addColorStop(0, "#fef08a");
+        grad.addColorStop(0.5, "#f97316");
+        grad.addColorStop(1, "#dc2626");
+
+        ctx.beginPath();
+        ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2);
+        ctx.fillStyle = grad;
+        ctx.fill();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = "#fff";
+        ctx.stroke();
+      }
+    }
+
+    function loop() {
+      if (video.readyState >= 2) {
+        detectMotion();
+        updateBall();
+        render();
+      }
+      animationId = requestAnimationFrame(loop);
+    }
+
+    startBtn.addEventListener("click", initCamera);
+    restartBtn.addEventListener("click", startGameState);
+  </script>
+</body>
+</html>
